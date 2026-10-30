@@ -1,4 +1,5 @@
 import { openFonts, chooseFont, fontIs } from './font-helpers';
+import { waveformBinCount } from '../../shared/waveform';
 import { test, expect } from '@playwright/test';
 import { readFileSync } from 'node:fs';
 const fonts=JSON.parse(readFileSync(new URL('../../public/fonts/manifest.json',import.meta.url),'utf8'));
@@ -37,6 +38,13 @@ test('recording streams to disk, becomes valid audio, supports ranges and wavefo
  await expect(page.locator('.media-name').filter({hasText:'旁白'})).toBeVisible({timeout:15000});
  const list=await(await page.request.get('/api/media')).json();const audio=list.find((m:any)=>m.kind==='audio');expect(audio.duration).toBeGreaterThan(0);expect(audio.hasAudio).toBe(true);
  const range=await page.request.get(`/media/${audio.id}/original`,{headers:{Range:'bytes=0-31'}});expect(range.status()).toBe(206);expect((await range.body()).length).toBe(32);
- await expect.poll(async()=>{const list=await(await page.request.get('/api/media')).json();return list.find((m:any)=>m.id===audio.id)?.waveform?.length;}).toBe(600);
+ await expect.poll(async()=>{const list=await(await page.request.get('/api/media')).json();return list.find((m:any)=>m.id===audio.id)?.waveform?.length;}).toBe(waveformBinCount(audio.duration));
+ await page.getByRole('button',{name:`加入 ${audio.name}`,exact:true}).click();
+ await page.getByRole('button',{name:'符合選取片段',exact:true}).click();
+ const waveform=page.locator('.clip-audio .waveform');await expect(waveform).toBeVisible();
+ await expect(waveform.locator('path')).toHaveAttribute('d',/^M/);
+ const width=Number((await waveform.getAttribute('viewBox'))!.split(' ')[2]);const strokes=(await waveform.locator('path').getAttribute('d'))!.split('M').length-1;
+ expect(strokes).toBeGreaterThan(width/2-2);expect(strokes).toBeLessThan(width/2+2);
+ await page.screenshot({path:'test-results/audio-waveform.png',fullPage:true});
  const blocked=await page.request.post('/api/recordings',{headers:{Origin:'https://example.invalid','X-Reelume':'1'}});expect(blocked.status()).toBe(403);
 });

@@ -50,7 +50,8 @@ export async function renderSegment(p:Project,library:Library,fonts:FontInfo[],f
     }else{const media=library.get(c.mediaId!);file=media.path;hasAudio=media.hasAudio;}
     if(animatedText)args.push('-t',n(length),'-i',file);
     else if(c.kind==='image'||c.kind==='text'||c.kind==='shape')args.push('-loop','1','-framerate',String(p.fps),'-t',n(length),'-i',file);
-    else args.push('-ss',n(c.sourceIn+elapsed*c.speed),'-t',n(length*c.speed),'-i',file);
+    // Short segments still need decoder/filter lookahead; output trims retain exact timing.
+    else args.push('-ss',n(c.sourceIn+elapsed*c.speed),'-t',n(Math.max(length*c.speed,.5)),'-i',file);
     const idx=input++;
     if(c.kind!=='audio'){
       const t=`(t+${n(elapsed)})`,T=`(T+${n(elapsed)})`;const scale=keyExpression(c,'scale',t,p.fps);

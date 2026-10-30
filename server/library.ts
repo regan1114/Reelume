@@ -3,6 +3,7 @@ import { createReadStream } from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { ffmpeg, probe } from './native';
+import { waveformBinCount } from '../shared/waveform';
 import type { Media } from '../shared/model';
 
 export type MediaRecord = Media & { path:string; owned:boolean };
@@ -14,7 +15,7 @@ export class Library {
   private closing=false;
   private controllers=new Set<AbortController>();
   constructor(public root:string){}
-  async init(){await fs.mkdir(path.join(this.root,'cache'),{recursive:true});await fs.mkdir(path.join(this.root,'media'),{recursive:true});try {this.records=JSON.parse(await fs.readFile(path.join(this.root,'library.json'),'utf8'));}catch(e:any){if(e.code!=='ENOENT')throw e;}for(const m of this.records){m.missing=!(await fs.stat(m.path).catch(()=>null));if(m.proxyStatus==='processing'||m.proxyStatus==='queued')m.proxyStatus='error';}}
+  async init(){await fs.mkdir(path.join(this.root,'cache'),{recursive:true});await fs.mkdir(path.join(this.root,'media'),{recursive:true});try {this.records=JSON.parse(await fs.readFile(path.join(this.root,'library.json'),'utf8'));}catch(e:any){if(e.code!=='ENOENT')throw e;}for(const m of this.records){m.missing=!(await fs.stat(m.path).catch(()=>null));if(m.proxyStatus==='processing'||m.proxyStatus==='queued')m.proxyStatus='error';}this.derive(this.records.filter(m=>!m.missing&&m.waveform?.length!==waveformBinCount(m.duration)));}
   async refresh(){await Promise.all(this.records.map(async m=>{const file=m.path;const missing=!(await fs.stat(file).catch(()=>null))?.isFile();if(m.path===file)m.missing=missing;}));return this.list();}
   list(){return this.records.map(({path:_,owned:__,...m})=>m);}
   get(id:string){const record=this.records.find(m=>m.id===id);if(!record)throw new Error('素材不存在');return record;}
@@ -40,9 +41,9 @@ export class Library {
   private queueWaveform(m:MediaRecord){this.proxyQueue=this.proxyQueue.then(async()=>{if(this.closing)return;const controller=new AbortController();this.controllers.add(controller);const file=path.join(this.root,'cache',`${m.id}.wave`);try{
     await ffmpeg(['-i',m.path,'-vn','-ac','1','-ar','8000','-f','f32le',file],{signal:controller.signal});
     // Incremental reduction: 1-hour audio never becomes a full PCM buffer in JS.
-    const bins=new Float32Array(600);let count=0,carry=Buffer.alloc(0);const total=Math.ceil(m.duration*8000);
-    for await(const b of createReadStream(file)){const buf=Buffer.concat([carry,b as Buffer]);let i=0;for(;i+4<=buf.length;i+=4){const n=Math.min(599,Math.floor(count++/total*600));bins[n]=Math.max(bins[n],Math.abs(buf.readFloatLE(i)));}carry=buf.subarray(i);}
-    m.waveform=Array.from(bins);await this.save();
+    const bins=new Float32Array(waveformBinCount(m.duration));let count=0,carry=Buffer.alloc(0);const total=Math.ceil(m.duration*8000);
+    for await(const b of createReadStream(file)){const buf=Buffer.concat([carry,b as Buffer]);let i=0;for(;i+4<=buf.length;i+=4){const n=Math.min(bins.length-1,Math.floor(count++/total*bins.length));bins[n]=Math.max(bins[n],Math.abs(buf.readFloatLE(i)));}carry=buf.subarray(i);}
+    m.waveform=Array.from(bins,v=>Math.round(Math.min(1,v)*1000)/1000);await this.save();
   }catch{}finally{this.controllers.delete(controller);await fs.rm(file,{force:true});}});}
   async proxy(id:string){const m=this.get(id);if(m.kind!=='video'||m.proxyStatus==='ready'||m.proxyStatus==='queued'||m.proxyStatus==='processing')return;m.proxyStatus='queued';await this.save();
     this.proxyQueue=this.proxyQueue.then(async()=>{if(this.closing)return;const controller=new AbortController();this.controllers.add(controller);m.proxyStatus='processing';await this.save();const dest=path.join(this.root,'cache',`${id}.proxy.mp4`);const tmp=dest+'.partial.mp4';try{await ffmpeg(['-i',m.path,'-vf','scale=960:540:force_original_aspect_ratio=decrease:force_divisible_by=2','-c:v','libx264','-preset','ultrafast','-crf','27','-threads','2','-c:a','aac','-b:a','96k','-movflags','+faststart',tmp],{signal:controller.signal});await fs.rename(tmp,dest);m.proxy=`/media/${id}/proxy`;m.proxyStatus='ready';}catch{m.proxyStatus='error';await fs.rm(tmp,{force:true});}finally{this.controllers.delete(controller);await this.save();}});

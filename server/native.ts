@@ -14,11 +14,12 @@ export function runNative(binary:string,args:string[],options:{signal?:AbortSign
     if(options.signal?.aborted) return reject(new Error('工作已暫停'));
     const child=spawn(binary,args,{stdio:['ignore','pipe','pipe'],windowsHide:true});options.onProcess?.(child);
     let out='',err='',lineBuffer='';
-    const cancel=()=>child.kill('SIGTERM');options.signal?.addEventListener('abort',cancel,{once:true});
+    let killTimer:ReturnType<typeof setTimeout>|undefined;
+    const cancel=()=>{child.kill('SIGTERM');killTimer=setTimeout(()=>child.kill('SIGKILL'),2000);killTimer.unref();};options.signal?.addEventListener('abort',cancel,{once:true});
     child.stdout.on('data',(b:Buffer)=>{const s=b.toString();out=(out+s).slice(-2_000_000);lineBuffer+=s;const lines=lineBuffer.split('\n');lineBuffer=lines.pop()??'';for(const l of lines){if(l.startsWith('out_time_us='))options.onProgress?.(Number(l.slice(12))/1e6);}});
     child.stderr.on('data',(b:Buffer)=>{err=(err+b.toString()).slice(-16000);});
-    child.on('error',e=>{options.signal?.removeEventListener('abort',cancel);reject(e);});
-    child.on('close',code=>{options.signal?.removeEventListener('abort',cancel);if(code===0)resolve(out);else reject(new Error(options.signal?.aborted?'工作已暫停':err.slice(-5000)||`FFmpeg 結束代碼 ${code}`));});
+    child.on('error',e=>{clearTimeout(killTimer);options.signal?.removeEventListener('abort',cancel);reject(e);});
+    child.on('close',code=>{clearTimeout(killTimer);options.signal?.removeEventListener('abort',cancel);if(code===0)resolve(out);else reject(new Error(options.signal?.aborted?'工作已暫停':err.slice(-5000)||`FFmpeg 結束代碼 ${code}`));});
   });
 }
 export const ffmpeg=(args:string[],options:Parameters<typeof runNative>[2]={})=>runNative(ffmpegPath,['-hide_banner','-nostdin','-y','-threads','2','-filter_complex_threads','1',...args],options);
